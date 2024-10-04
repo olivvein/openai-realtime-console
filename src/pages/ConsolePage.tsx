@@ -11,6 +11,7 @@
 const LOCAL_RELAY_SERVER_URL: string =
   process.env.REACT_APP_LOCAL_RELAY_SERVER_URL || '';
 
+
 import { useEffect, useRef, useCallback, useState } from 'react';
 
 import { RealtimeClient } from '@openai/realtime-api-beta';
@@ -53,6 +54,20 @@ interface RealtimeEvent {
   count?: number;
   event: { [key: string]: any };
 }
+
+// Ensure the image size is appropriate with the list
+const imageStyle = {
+    width: '100px', // Adjust the width as needed
+    height: 'auto', // Maintain aspect ratio
+    // Add any other styles as necessary
+};
+
+const imageGridStyle = {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)', // 3 columns
+    gridTemplateRows: 'repeat(2, auto)', // 2 rows
+    gap: '10px', // Adjust the gap between images as needed
+};
 
 export function ConsolePage() {
   /**
@@ -110,6 +125,11 @@ export function ConsolePage() {
    * - memoryKv is for set_memory() function
    * - coords, marker are for get_weather() function
    */
+
+  type SearchResult = {
+    title: string;
+    url: string;
+  }
   const [items, setItems] = useState<ItemType[]>([]);
   const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([]);
   const [expandedEvents, setExpandedEvents] = useState<{
@@ -119,11 +139,15 @@ export function ConsolePage() {
   const [canPushToTalk, setCanPushToTalk] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [memoryKv, setMemoryKv] = useState<{ [key: string]: any }>({});
+  const [imageList, setImageList] = useState([])
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [coords, setCoords] = useState<Coordinates | null>({
     lat: 37.775593,
     lng: -122.418137,
   });
   const [marker, setMarker] = useState<Coordinates | null>(null);
+
+  const [userName, setUserName] = useState<string>('');
 
   /**
    * Utility for formatting the timing of logs
@@ -297,10 +321,23 @@ export function ConsolePage() {
     }
   }, [items]);
 
+  
+
+
   /**
    * Set up render loops for the visualization canvas
    */
   useEffect(() => {
+
+    const isSignedIn=puter.auth.isSignedIn();
+    if (!isSignedIn){
+        puter.auth.signIn();
+    }
+    puter.auth.getUser().then(function(user: { username: any; }) {
+        const username=user.username;
+        console.log(username);
+        setUserName(username);
+    });
     let isLoaded = true;
 
     const wavRecorder = wavRecorderRef.current;
@@ -382,33 +419,28 @@ export function ConsolePage() {
     client.updateSession({ input_audio_transcription: { model: 'whisper-1' } });
 
     // Add tools
+    
     client.addTool(
       {
-        name: 'set_memory',
-        description: 'Saves important data about the user into memory.',
+        name: 'execute_js',
+        description: 'execute js code to get result. it will be run as const result=eval(js_code); Make sure you handle promises and async code in this context.',
         parameters: {
           type: 'object',
           properties: {
-            key: {
+            js_code: {
               type: 'string',
               description:
-                'The key of the memory value. Always use lowercase and underscores, no other characters.',
-            },
-            value: {
-              type: 'string',
-              description: 'Value can be anything represented as a string',
-            },
+                'the js code to execute. it must return a value with the keyword return.',
+            }
           },
-          required: ['key', 'value'],
+          required: ['js_code'],
         },
       },
-      async ({ key, value }: { [key: string]: any }) => {
-        setMemoryKv((memoryKv) => {
-          const newKv = { ...memoryKv };
-          newKv[key] = value;
-          return newKv;
-        });
-        return { ok: true };
+      async ({ js_code }: { js_code: string }) => {
+        console.log (js_code);
+        const result = eval(js_code);
+        console.log(result);
+        return result;
       }
     );
     client.addTool(
@@ -454,6 +486,44 @@ export function ConsolePage() {
         return json;
       }
     );
+
+    client.addTool(
+      {
+        name: 'tavily_search',
+        description: 'Search the web for information.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'The search query',
+            },
+          },
+          required: ['query'],
+        },
+      },
+      async ({ query }: { query: string }) => {
+        const result = await fetch(`https://api.tavily.com/search`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            api_key: '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',
+            query: query,
+            include_images: true,
+            search_depth: 'advanced',
+            max_results: 10,
+          }),
+        });
+        const json = await result.json();
+        console.log(json);
+        setSearchResults(json.results);
+        setImageList(json.images);
+        return json;
+      }
+    );
+
 
     // handle realtime events from client + server for event logging
     client.on('realtime.event', (realtimeEvent: RealtimeEvent) => {
@@ -508,7 +578,7 @@ export function ConsolePage() {
       <div className="content-top">
         <div className="content-title">
           <img src="/openai-logomark.svg" />
-          <span>realtime console</span>
+          <span>Puter realtime conversation | {userName}</span>
         </div>
         <div className="content-api-key">
           {!LOCAL_RELAY_SERVER_URL && (
@@ -524,7 +594,7 @@ export function ConsolePage() {
       </div>
       <div className="content-main">
         <div className="content-logs">
-          <div className="content-block events">
+          {/* <div className="content-block events">
             <div className="visualization">
               <div className="visualization-entry client">
                 <canvas ref={clientCanvasRef} />
@@ -533,7 +603,7 @@ export function ConsolePage() {
                 <canvas ref={serverCanvasRef} />
               </div>
             </div>
-            <div className="content-block-title">events</div>
+            {/* <div className="content-block-title">events</div>
             <div className="content-block-body" ref={eventsScrollRef}>
               {!realtimeEvents.length && `awaiting connection...`}
               {realtimeEvents.map((realtimeEvent, i) => {
@@ -596,8 +666,8 @@ export function ConsolePage() {
                   </div>
                 );
               })}
-            </div>
-          </div>
+            </div> 
+          </div> */}
           <div className="content-block conversation">
             <div className="content-block-title">conversation</div>
             <div className="content-block-body" data-conversation-content>
@@ -692,7 +762,7 @@ export function ConsolePage() {
           </div>
         </div>
         <div className="content-right">
-          <div className="content-block map">
+          {/* <div className="content-block map">
             <div className="content-block-title">get_weather()</div>
             <div className="content-block-title bottom">
               {marker?.location || 'not yet retrieved'}
@@ -717,12 +787,28 @@ export function ConsolePage() {
                 />
               )}
             </div>
+          </div> */}
+          <div className="content-block kv">
+            <div className="image-grid" style={imageGridStyle}>
+                {imageList.map((image, i) => {
+                    return (
+                        <div className="image-item" key={i}>
+                            <img src={image} style={imageStyle} alt="Description" />
+                        </div>
+                    );
+                })}
+            </div>
           </div>
           <div className="content-block kv">
-            <div className="content-block-title">set_memory()</div>
-            <div className="content-block-body content-kv">
-              {JSON.stringify(memoryKv, null, 2)}
-            </div>
+            {searchResults.map((result, i) => {
+              return (
+                <div className="search-result" key={i}>
+                  <a href={result.url} target="_blank" rel="noopener noreferrer" className="search-result-title">
+                    {result.title}
+                  </a>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
